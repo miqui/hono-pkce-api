@@ -18,7 +18,10 @@ export function tokenHandler(codes: CodeStore, keys: KeyStore, now: () => number
       return err(c, "invalid_request", "content-type must be application/x-www-form-urlencoded");
     }
     const form = await c.req.parseBody();
-    const get = (k: string) => (typeof form[k] === "string" ? (form[k] as string) : "");
+    const get = (k: string) => {
+      const v = form[k];
+      return typeof v === "string" ? v : "";
+    };
 
     if (get("grant_type") !== "authorization_code") {
       return err(c, "unsupported_grant_type", "only authorization_code is supported");
@@ -36,7 +39,7 @@ export function tokenHandler(codes: CodeStore, keys: KeyStore, now: () => number
 
     // Consume first: any attempt burns the code (replay-safe).
     const entry = codes.consume(code, now());
-    if (!entry) return err(c, "invalid_grant", "invalid or expired code");
+    if (entry === "replayed" || !entry) return err(c, "invalid_grant", "invalid or expired code");
     if (entry.clientId !== clientId || entry.redirectUri !== redirectUri) {
       return err(c, "invalid_grant", "code does not match client or redirect_uri");
     }

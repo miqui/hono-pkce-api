@@ -41,19 +41,32 @@ export const CODE_TTL_MS = 60_000;
 
 export class CodeStore {
   private codes = new Map<string, AuthCode>();
+  /**
+   * Tombstones: consumed codes are kept until their original expiry so a replay is
+   * distinguishable from an unknown code. Both surface as invalid_grant. Access tokens
+   * are stateless JWTs and cannot be revoked on replay; they simply expire (5 min).
+   */
+  private consumed = new Map<string, number>();
+
+  private prune(now: number): void {
+    for (const [k, e] of this.consumed) if (e <= now) this.consumed.delete(k);
+    for (const [k, v] of this.codes) if (v.expiresAt <= now) this.codes.delete(k);
+  }
 
   issue(data: Omit<AuthCode, "expiresAt">, now: number): string {
+    this.prune(now);
     const code = randomBytes(32).toString("base64url");
     this.codes.set(code, { ...data, expiresAt: now + CODE_TTL_MS });
     return code;
   }
 
   /** Atomically fetch and delete; a code can be consumed only once. */
-  consume(code: string, now: number): AuthCode | null {
+  consume(code: string, now: number): AuthCode | "replayed" | null {
+    this.prune(now);
     const entry = this.codes.get(code);
-    if (!entry) return null;
+    if (!entry) return this.consumed.has(code) ? "replayed" : null;
     this.codes.delete(code);
-    if (entry.expiresAt <= now) return null;
+    this.consumed.set(code, entry.expiresAt);
     return entry;
   }
 }

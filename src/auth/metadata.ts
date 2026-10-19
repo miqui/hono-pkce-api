@@ -12,6 +12,5 @@ export function metadata() {
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: [...ALLOWED_SCOPES],
-    id_token_signing_alg_values_supported: [],
   };
 }

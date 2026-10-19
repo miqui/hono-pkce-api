@@ -5,10 +5,17 @@ import {
   generateKeyPair,
   exportJWK,
   type JSONWebKeySet,
-  type CryptoKey,
 } from "jose";
 
+/** Refuse to start in production with a non-https issuer. */
+export function assertIssuer(issuer: string, env: string | undefined = process.env.NODE_ENV): void {
+  if (env === "production" && new URL(issuer).protocol !== "https:") {
+    throw new Error("ISSUER must be an https URL when NODE_ENV=production");
+  }
+}
+
 export const ISSUER = process.env.ISSUER ?? "http://localhost:3000";
+assertIssuer(ISSUER);
 export const AUDIENCE = "hono-pkce-api";
 const ALG = "ES256";
 
@@ -24,16 +31,16 @@ export interface KeyStore {
   getJwks(): Promise<JSONWebKeySet>;
 }
 
-export function createKeyStore(): KeyStore {
+/** `keyPair` is for tests; by default a fresh ES256 pair is generated. */
+export function createKeyStore(keyPair?: { publicKey: CryptoKey; privateKey: CryptoKey }): KeyStore {
   const ready = (async () => {
-    const { publicKey, privateKey } = await generateKeyPair(ALG, {
-      extractable: true,
-    });
+    const { publicKey, privateKey } =
+      keyPair ?? (await generateKeyPair(ALG, { extractable: true }));
     const kid = randomUUID();
     // exportJWK on the public key yields only public members.
     const pub = await exportJWK(publicKey);
     const jwk = { kty: pub.kty, crv: pub.crv, x: pub.x, y: pub.y, kid, alg: ALG, use: "sig" };
-    return { publicKey: publicKey as CryptoKey, privateKey: privateKey as CryptoKey, kid, jwk };
+    return { publicKey, privateKey, kid, jwk };
   })();
 
   return {
@@ -55,6 +62,7 @@ export function createKeyStore(): KeyStore {
         issuer: ISSUER,
         audience: AUDIENCE,
         algorithms: [ALG],
+        typ: "at+jwt",
       });
       if (
         typeof payload.sub !== "string" ||
