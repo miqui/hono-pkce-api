@@ -1,7 +1,8 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
-import { requireScope, type ResourceEnv } from "./bearer.js";
+import { requireScope } from "./bearer.js";
+import type { ResourceEnv } from "./types.js";
 import type { Note, NoteStore } from "./store.js";
 
 const noteSchema = z.object({
@@ -17,6 +18,8 @@ const publicNote = (n: Note) => ({
   updatedAt: n.updatedAt,
 });
 
+export const MAX_NOTES_PER_OWNER = 100;
+
 const limit = bodyLimit({
   maxSize: 32 * 1024,
   onError: (c) => c.json({ error: "payload_too_large" }, 413),
@@ -26,7 +29,7 @@ export function notesRoutes(store: NoteStore): Hono<ResourceEnv> {
   const app = new Hono<ResourceEnv>();
   const read = requireScope("notes:read");
   const write = requireScope("notes:write");
-  const notFound = (c: { json: (o: object, s: 404) => Response }) =>
+  const notFound = (c: Context<ResourceEnv>) =>
     c.json({ error: "not_found" }, 404);
 
   async function parse(req: Request) {
@@ -54,6 +57,9 @@ export function notesRoutes(store: NoteStore): Hono<ResourceEnv> {
   app.post("/", write, limit, async (c) => {
     const p = await parse(c.req.raw);
     if ("error" in p) return c.json(p, 400);
+    if (store.count(c.get("auth").sub) >= MAX_NOTES_PER_OWNER) {
+      return c.json({ error: "quota_exceeded", max: MAX_NOTES_PER_OWNER }, 429);
+    }
     return c.json(publicNote(store.create(c.get("auth").sub, p.data)), 201);
   });
 

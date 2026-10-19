@@ -21,6 +21,10 @@ export class NoteStore {
     return [...this.notes.values()].filter((n) => n.owner === owner);
   }
 
+  count(owner: string): number {
+    return this.list(owner).length;
+  }
+
   get(owner: string, id: string): Note | undefined {
     const n = this.notes.get(id);
     return n && n.owner === owner ? n : undefined;

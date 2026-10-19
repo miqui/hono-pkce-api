@@ -1,18 +1,10 @@
 import type { MiddlewareHandler } from "hono";
-
-export interface TokenClaims {
-  sub: string;
-  scope: string;
-  client_id: string;
-}
-
-export type Verifier = (token: string) => Promise<TokenClaims>;
-
-export type ResourceEnv = { Variables: { auth: TokenClaims } };
+import type { AccessTokenClaims, ResourceEnv, Verifier } from "./types.js";
 
 const REALM = 'Bearer realm="hono-pkce-api"';
 
-export function parseScopes(scope: string): Set<string> {
+export function parseScopes(scope: unknown): Set<string> {
+  if (typeof scope !== "string") return new Set();
   return new Set(scope.split(" ").filter(Boolean));
 }
 
@@ -34,7 +26,7 @@ export function bearerAuth(verify: Verifier): MiddlewareHandler<ResourceEnv> {
     if (!header) return unauthorized();
     const m = /^bearer +(\S+)$/i.exec(header.trim());
     if (!m?.[1]) return unauthorized("invalid_request");
-    let claims: TokenClaims;
+    let claims: AccessTokenClaims;
     try {
       claims = await verify(m[1]);
     } catch {

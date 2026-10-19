@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createResourceRouter } from "./router.js";
+import { NoteStore } from "./store.js";
+import type { AccessTokenClaims } from "./types.js";
 
-const tokens: Record<string, { sub: string; scope: string; client_id: string }> = {
+const tokens: Record<string, AccessTokenClaims> = {
+  empty: { sub: "alice", scope: "", client_id: "c" },
+  noscope: { sub: "alice", client_id: "c" } as unknown as AccessTokenClaims,
   alice: { sub: "alice", scope: "notes:read notes:write", client_id: "c" },
   bob: { sub: "bob", scope: "notes:read notes:write", client_id: "c" },
   ro: { sub: "alice", scope: "notes:read", client_id: "c" },
@@ -11,6 +15,8 @@ const tokens: Record<string, { sub: string; scope: string; client_id: string }> 
 const app = createResourceRouter({
   verifyAccessToken: async (t) => {
     const c = tokens[t];
+    if (t === "expired") throw new Error("jwt expired");
+    if (t === "boom") throw new TypeError("kaboom secret-internal");
     if (!c) throw new Error("bad token");
     return c;
   },
@@ -110,5 +116,74 @@ describe("notes", () => {
   it("rejects oversized bodies", async () => {
     const r = await call("/notes", "alice", json("POST", { title: "a", body: "x".repeat(40000) }));
     expect(r.status).toBe(413);
+  });
+});
+
+describe("extra hardening", () => {
+  it("expired token -> 401 invalid_token", async () => {
+    const r = await call("/notes", "expired");
+    expect(r.status).toBe(401);
+    expect(r.headers.get("WWW-Authenticate")).toContain('error="invalid_token"');
+  });
+  it("verifier throwing is 401 not 500, no leak", async () => {
+    const r = await call("/notes", "boom");
+    expect(r.status).toBe(401);
+    expect(await r.text()).not.toContain("kaboom");
+  });
+  it("empty scope and missing scope claim -> 403", async () => {
+    for (const t of ["empty", "noscope"]) {
+      expect((await call("/notes", t)).status).toBe(403);
+      expect((await call("/notes", t, json("POST", note))).status).toBe(403);
+    }
+  });
+  it("malformed JSON -> 400 invalid_json", async () => {
+    const r = await call("/notes", "alice", { method: "POST", body: "{nope" });
+    expect(r.status).toBe(400);
+    expect((await r.json()).error).toBe("invalid_json");
+  });
+  it("oversize chunked body (no Content-Length) -> 413", async () => {
+    const chunk = new TextEncoder().encode("x".repeat(8 * 1024));
+    const stream = new ReadableStream<Uint8Array>({
+      start(ctrl) {
+        for (let i = 0; i < 8; i++) ctrl.enqueue(chunk);
+        ctrl.close();
+      },
+    });
+    const req = new Request("http://localhost/notes", {
+      method: "POST",
+      headers: { Authorization: "Bearer alice", "Content-Type": "application/json" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+    expect(req.headers.get("content-length")).toBeNull();
+    const r = await app.request(req);
+    expect(r.status).toBe(413);
+  });
+  it("500 does not leak internals or token", async () => {
+    const store = new NoteStore();
+    store.list = () => {
+      throw new Error("db exploded Bearer alice");
+    };
+    const a = createResourceRouter({ verifyAccessToken: async () => tokens.alice!, store });
+    const r = await a.request("/notes", { headers: { Authorization: "Bearer alice" } });
+    expect(r.status).toBe(500);
+    const text = await r.text();
+    expect(JSON.parse(text)).toEqual({ error: "internal_error" });
+    expect(text).not.toContain("exploded");
+    expect(text).not.toContain("alice");
+  });
+  it("per-owner quota -> 429, other owners unaffected", async () => {
+    const q = createResourceRouter({ verifyAccessToken: async (t) => tokens[t]! });
+    const call = (tok: string) =>
+      q.request("/notes", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+        body: JSON.stringify(note),
+      });
+    for (let i = 0; i < 100; i++) expect((await call("alice")).status).toBe(201);
+    const r = await call("alice");
+    expect(r.status).toBe(429);
+    expect(await r.json()).toEqual({ error: "quota_exceeded", max: 100 });
+    expect((await call("bob")).status).toBe(201);
   });
 });
